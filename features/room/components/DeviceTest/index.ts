@@ -1,0 +1,1 @@
+export { DeviceTestView } from './DeviceTestView';

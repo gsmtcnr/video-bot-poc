@@ -11,11 +11,15 @@ import { useConversation } from "@elevenlabs/react";
 import { useCamera } from "../hooks/useCamera";
 import { useRoomState } from "../hooks/useRoomState";
 import { useMockWebSpeech } from "../hooks/useMockWebSpeech";
+import { useEyeContact } from "../hooks/useEyeContact";
+import { useSilenceDetection } from "../hooks/useSilenceDetection";
 import { RoomHeader } from "../components/Header";
 import { ChatSidebar } from "../components/Chat";
 import { VideoGrid } from "../components/VideoGrid";
 import { LoadingView } from "../components/LoadingView";
 import { ErrorView } from "../components/ErrorView";
+import { DeviceTestView } from "../components/DeviceTest";
+import { WarningOverlay } from "../components/Warnings";
 import { createChatMessage, parseElevenLabsMessage } from "../utils/messages";
 import { defaultInterviewConfig } from "@/lib/interview/config";
 import { createRecorder } from "../utils/createRecorder";
@@ -33,6 +37,9 @@ interface RoomViewProps {
 export function RoomView({ roomId }: RoomViewProps) {
   const { state, setState, updateChatMessages, updateChatInput, toggleChat } =
     useRoomState();
+
+  // Device test state
+  const [deviceTestsCompleted, setDeviceTestsCompleted] = useState(false);
 
   // Token management - room ID'den token alınacak
   const conversationTokenRef = useRef<string | undefined>(undefined);
@@ -76,6 +83,9 @@ export function RoomView({ roomId }: RoomViewProps) {
   const connectionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const elevenLabsStartedRef = useRef(false);
   const isReadyToSpeakRef = useRef(true);
+
+  // Skip question ref (will be set by mock hook)
+  const skipToNextQuestionRef = useRef<(() => void) | null>(null);
 
   // Otomatik sonlandırma için ref'ler (gerçek mode için)
   const isEndingSessionRef = useRef(false);
@@ -275,6 +285,44 @@ export function RoomView({ roomId }: RoomViewProps) {
     ? mockWebSpeechApi.conversation
     : realConversation;
 
+  // skipToNextQuestion ref'ini set et (mock mode için)
+  useEffect(() => {
+    if (useMockMode) {
+      skipToNextQuestionRef.current = mockWebSpeechApi.skipToNextQuestion;
+    } else {
+      skipToNextQuestionRef.current = null;
+    }
+  }, [useMockMode, mockWebSpeechApi]);
+
+  // Eye contact detection (sadece cihaz testleri tamamlandıktan sonra)
+  const eyeContact = useEyeContact({
+    videoStream: camera.videoStream,
+    enabled: deviceTestsCompleted && state.isElevenLabsConnected,
+    onEyeContactLost: () => {
+      console.log("👁️ Eye contact lost for 5 seconds, skipping to next question");
+      if (useMockMode && skipToNextQuestionRef.current) {
+        skipToNextQuestionRef.current();
+      }
+      // TODO: Real mode için de implement edilmeli
+    },
+    warningDuration: 5,
+  });
+
+  // Silence detection (sadece cihaz testleri tamamlandıktan sonra ve mock mode için)
+  // Audio stream'i camera.videoStream'den alıyoruz
+  const silence = useSilenceDetection({
+    audioStream: camera.videoStream,
+    enabled: deviceTestsCompleted && state.isElevenLabsConnected && useMockMode,
+    onSilenceDetected: () => {
+      console.log("🔇 Silence detected for 10 seconds, skipping to next question");
+      if (skipToNextQuestionRef.current) {
+        skipToNextQuestionRef.current();
+      }
+    },
+    silenceDuration: 10,
+    threshold: 0.01,
+  });
+
   // endSession ref'ini set et (otomatik sonlandırma için - sadece gerçek mode)
   useEffect(() => {
     if (!useMockMode) {
@@ -302,8 +350,10 @@ export function RoomView({ roomId }: RoomViewProps) {
     return conversation.getOutputVolume?.() ?? 0;
   }, [conversation, useMockMode, agentState]);
 
-  // Initialize: Camera + ElevenLabs
+  // Initialize: Camera + ElevenLabs (sadece cihaz testleri tamamlandıktan sonra)
   useEffect(() => {
+    if (!deviceTestsCompleted) return;
+
     const initialize = async () => {
       try {
         setState({ isLoading: true, loadingStep: "starting_camera" });
@@ -437,7 +487,7 @@ export function RoomView({ roomId }: RoomViewProps) {
         });
       }
     };
-  }, [useMockMode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [useMockMode, deviceTestsCompleted]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!camera.videoStream) return;
   
@@ -501,6 +551,11 @@ export function RoomView({ roomId }: RoomViewProps) {
     ]
   );
 
+  // Device tests first
+  if (!deviceTestsCompleted) {
+    return <DeviceTestView onTestsComplete={() => setDeviceTestsCompleted(true)} />;
+  }
+
   // Error handling
   const error = state.errorMessage || camera.error;
   if (error) {
@@ -514,6 +569,18 @@ export function RoomView({ roomId }: RoomViewProps) {
 
   return (
     <div className="flex h-screen flex-col bg-gray-900">
+      {/* Warning Overlays */}
+      <WarningOverlay
+        show={eyeContact.isEyeContactLost}
+        countdown={eyeContact.countdown}
+        message="Lütfen kameraya bakın"
+      />
+      <WarningOverlay
+        show={silence.isSilent}
+        countdown={silence.silenceDuration > 0 ? 10 - silence.silenceDuration : 0}
+        message="Sessizlik tespit edildi"
+      />
+
       {/* Header */}
       <RoomHeader
         isConnected={true}

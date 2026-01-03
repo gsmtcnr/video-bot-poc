@@ -53,6 +53,7 @@ export function useMockWebSpeech({
 }: Props): UseElevenLabsReturn & {
   setVoice: (v: VoiceSelector) => void;
   getAvailableVoices: () => SpeechSynthesisVoice[];
+  skipToNextQuestion: () => void;
 } {
   /* ---------------------------------- */
   /* Refs & State                       */
@@ -326,11 +327,23 @@ export function useMockWebSpeech({
     onDisconnect?.();
   }, []);
 
+  const skipToNextQuestion = useCallback(() => {
+    // Mevcut konuşmayı durdur
+    globalThis.speechSynthesis?.cancel();
+    isTTSSpeakingRef.current = false;
+    setIsSpeaking(false);
+
+    // Bir sonraki soruya geç
+    answeredQuestionsCountRef.current += 1;
+    respondAsAI(false); // Gecikme olmadan bir sonraki soruya geç
+  }, []);
+
   return {
     conversation: mockConversation,
     sendMessage: mockConversation.sendUserMessage,
     startSession,
     endSession,
+    skipToNextQuestion,
     setVoice: v => {
       voiceConfigRef.current = v;
     },
